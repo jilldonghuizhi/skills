@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
+import yaml
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,21 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption("--user", action="store", default=None, help="测试账号用户名（覆盖 WEB_USER）")
     parser.addoption("--password", "--pass", action="store", dest="password", default=None,
                      help="测试账号密码（覆盖 WEB_PASS，不落盘）")
+
+
+@pytest.fixture
+def test_data(request: pytest.FixtureRequest) -> dict:
+    """按调用测试模块名自动加载 data/<module>.yaml（与 test_<功能>.py 同名）。
+
+    返回该 YAML 顶层 dict；参数化用例从中取对应场景的数据矩阵
+    （如 `test_data["login_validation"]`）。文件缺失时跳过该测试，
+    便于尚未准备数据文件的模块不阻塞 collect。
+    """
+    module = request.module.__name__  # 如 test_login
+    data_file = PROJECT_ROOT / "data" / f"{module}.yaml"
+    if not data_file.exists():
+        pytest.skip(f"未找到测试数据文件：{data_file}")
+    return yaml.safe_load(data_file.read_text(encoding="utf-8")) or {}
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:

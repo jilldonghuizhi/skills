@@ -21,9 +21,7 @@ class __Feature__Page(BasePage):
     # 结果容器：必须 MCP 实测命中后替换 TODO_VERIFY（注意区分 tbody 数据行与 thead 表头）
     _rows = "TODO_VERIFY:结果数据行容器，待 MCP 实测（如 #bookList tr，表头在 thead 不计入）"
 
-    def open(self) -> None:
-        """打开 __feature__ 页面。"""
-        self.goto("/")
+    # 导航：复用基类 goto()（基于类级 URL_PATH），本类不另定义 open()。
 
     def wait_for_content(self, timeout: int = 10000) -> None:
         """等待异步渲染内容就绪。

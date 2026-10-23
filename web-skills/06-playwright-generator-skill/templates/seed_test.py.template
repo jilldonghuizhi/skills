@@ -24,7 +24,25 @@ class Test__Feature__:
     def test_s01_normal_flow(self, page) -> None:
         """按需求和已验证探索事实实现正常流程断言。"""
         page_object = __Feature__Page(page)
-        page_object.open()
+        page_object.goto()  # 导航到本页 URL_PATH（基类提供；禁止调用不存在的 open()）
         page_object.wait_for_content()  # 异步内容先等待再断言
         assert page_object.result_count() >= 1  # 状态读取方法 + 原生 assert
         page_object.expect_result_visible()     # 或断言封装方法
+
+    @allure.story("参数化示例")
+    @allure.severity(allure.severity_level.NORMAL)
+    @pytest.mark.ui
+    @pytest.mark.parametrize(
+        "row",
+        [pytest.param(c, id=c["row_id"]) for c in []],  # 数据来自 test_data fixture + data/<module>.yaml
+    )
+    def test_s02_param_demo(self, page, row, test_data) -> None:
+        """参数化示例：同步骤多数据场景（来自 testcase.md `[参数化]` 场景）。
+
+        数据矩阵落盘 data/<module>.yaml，经根 conftest 的 test_data fixture 加载；
+        每行 row_id 作为用例 ID。用例层只传数据、调页面对象方法，零 Playwright API。
+        """
+        page_object = __Feature__Page(page)
+        page_object.goto()
+        page_object.apply_case(row)          # 按实际页面对象方法替换
+        page_object.expect_case_result(row)  # 断言封装在页面对象

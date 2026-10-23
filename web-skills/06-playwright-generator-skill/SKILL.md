@@ -117,9 +117,9 @@ description: Playwright Web/UI 自动化框架与 POM 用例统一生成器。PO
   ```
 
   该属性关闭 pytest 默认的用例 ID 转义，避免中文用例名（如 `test_login[登录成功]`）被转成不可读编码；注册 `ui`/`smoke` 等标记以避免 PytestUnknownMarkWarning。
-- `data/` 存放测试数据（参数化用例的数据源，YAML/JSON/CSV）。每个功能模块对应一个 `data/<功能名>.yaml`（与 `test_<功能>.py` 同名），由 `e2e/testcases/conftest.py` 的 `test_data` fixture 按模块名自动加载；框架初始化创建 `data/` 空目录（不预建示例数据文件），不在用例文件内硬编码大段输入数据。
+- `data/` 存放测试数据（参数化用例的数据源，YAML/JSON/CSV）。每个功能模块对应一个 `data/<module>.yaml`（`<module>` 为测试模块名，如 `test_login.py` → `data/test_login.yaml`，与 `test_<功能>.py` 同名），由框架初始化生成的项目根 `conftest.py` 的 `test_data` fixture 按调用测试模块名自动加载（实现见 `conftest.py.template`）；框架初始化创建 `data/` 空目录（不预建示例数据文件），不在用例文件内硬编码大段输入数据。
 - `BrowserManager` 负责 Playwright/browser/context 生命周期；`viewport` 配置在 `browser.new_context()`；浏览器类型/无头模式**只由 `config.yaml` 的 `web.browser_type` / `web.headless` 驱动**（要变更改配置或配置 profile）。**严禁注册 `--browser`/`--headed`/`--headless` 等 pytest 选项、也不得依赖 `WEB_BROWSER_TYPE`/`WEB_HEADLESS` 环境变量**——运行环境常已安装 `pytest-playwright` 等插件并注册了同名选项，重复 `addoption` 会触发 `option already added` 导致 pytest 启动即失败。按 `web.trace_enabled` 启动 trace，失败时导出到 `e2e/traces/`。**`e2e/screenshots/` 与 `e2e/traces/` 不预建空目录**：截图与 trace 落地前由对应代码 `Path(...).mkdir(parents=True, exist_ok=True)` 按需创建（框架初始化不生成 `.gitkeep`）。
-- `BasePage` 包装导航、点击、输入、读取、断言和截图等常用操作，使用日志和 `allure.step`；页面对象继承 `e2e.web.base_page.BasePage`。
+- `BasePage` 包装导航、点击、输入、读取、断言和截图等常用操作，使用日志和 `allure.step`；页面对象继承 `e2e.web.base_page.BasePage`。导航统一调用基类 `goto()`（基于类级 `URL_PATH`：无参走 `URL_PATH`、传 `path` 覆盖）；**禁止生成 `open()` 调用**——框架 `BasePage` 不提供 `open()`，调用会在运行时抛 `AttributeError`，测试模板与页面对象均改用 `goto()`。
 - `e2e/web/constants.py` 集中定义**业务相关常量**（与具体业务/页面语义强相关的常量）：如业务状态码、业务文案/枚举、页面固定业务标识、业务阈值等；**框架级共享常量（超时、等待状态、重试次数、通用日志/断言文案等）一律进 `config/config.yaml` 的 `web` 段，经环境变量覆盖，禁止在 constants.py 硬编码**。页面对象与用例统一 `from e2e.web.constants import ...` 引用业务常量，**禁止在页面对象或用例中硬编码这些业务常量**；框架级通用值由 `ConfigReader` 从 `config.yaml` 读取；仅单功能使用、与业务数据强相关的常量可放功能文件顶部或 `data/`，真正跨模块共享的业务常量才进 `constants.py`。
 - 测试 `conftest.py` 提供 browser/context/page fixtures；失败截图 hook 只处理 call 阶段的 failed/broken 报告，显式导入 `Path`，并将截图附加到 Allure。trace 由 `BrowserManager.export_trace()` 导出后使用底座 `attach_failure_artifact("trace", trace_path)` 挂载；采集或挂载失败不得掩盖测试原始结果。
 - **fixture 作用域约束（防 ScopeMismatch）**：被 session 级消费者请求的 fixture 必须声明 `scope="session"`（至少不低于消费者）。已知冲突：`pytest-base-url` 插件的 session 级 `_verify_url` 会请求 `base_url`——`base_url` 若为 function 级将报 `ScopeMismatch`。`base_url` 等包装 session 级资源（如 browser_manager）的 fixture 一并声明 session 级。
@@ -175,6 +175,7 @@ python -m pytest --collect-only -q
   - 或提供**断言封装方法**：`expect_xxx(...)`，内部用 `playwright.sync_api.expect`（自带自动重试等待），用例直接调用。
   - URL/title 断言同样封装为页面对象方法（如 `current_url()`），用例不直接访问 `page.url`/`page.title()`。
 - **等待与导航（硬性规范）**：
+  - **页面打开只用基类 `goto()`（基于 `URL_PATH`），禁止 `open()`**：框架 `BasePage` 仅提供 `goto()`，未定义 `open()`；生成代码若调用 `open()` 会在运行时抛 `AttributeError`。测试模板（`seed_test.py.template`）与页面模板（`seed_page.py.template`）均已统一为 `goto()`；无参 `goto()` 走类级 `URL_PATH`，传 `path` 可覆盖。
   - **异步渲染内容不得裸断言（load 事件不等于数据就绪）**：AJAX 表格/列表/延迟加载文本在 `count()`/`inner_text()` 前必须先等待。仅依赖 `expect_navigation`/`load` 不够——`load` 返回时 AJAX 数据往往还没渲染。页面对象触发 AJAX 后必须显式等待：优先 `self.page.wait_for_load_state("networkidle")`，或 `locator.wait_for()` / `nth(n).wait_for()`；提供 `wait_for_xxx()` 方法封装，用例断言前调用。
   - **严格区分「真实导航」与「原地 JS 刷新/分页」，二者等待方式不同**：真实导航才用 `expect_navigation` 包裹点击（链接 `href` 指向真实 URL、`location.href` 赋值、表单 `action` 提交、`location.reload()`）；不确定时方法提供 `wait_for_navigation: bool = False` 参数。原地 JS 刷新 / 分页 / 筛选重渲染（`href="javascript:;"`、AJAX 列表、组件库分页、`search()` 类 JS 函数）**绝不**包 `expect_navigation`——这类点击不触发 Playwright 导航事件，包裹会直接超时失败；正确做法：点击后 `wait_for_load_state("networkidle")` 或等目标元素重渲染。分页/筛选/搜索类方法默认**不**带 `wait_for_navigation`，并在 docstring 标注「JS 原地更新」。
   - **`target="_blank"` 链接用 `context.expect_page()` 捕获新页**：方法提供 `new_tab: bool = False` 参数，捕获 popup 并 `wait_for_load_state()` 后**返回新 page**；用例对返回的新 page 构造对应页面对象再断言（页面对象构造函数须支持传入任意 page 实例）。
@@ -198,10 +199,15 @@ python -m pytest --collect-only -q
 - `@allure.feature` 标注在 **class 级**（一个功能模块一个 feature，与文件/class 一一对应），`@allure.story` 标注在 **方法级**（每个需求场景一个 story），`@allure.severity` 标注在方法级。
 - 凭据：沿用 `credentials` fixture 约定（conftest 注册 `--user/--password`，命令行 > `WEB_USER`/`WEB_PASS` 环境变量 > 占位值；用例只注入不直读环境变量；未提供则占位值自然失败）。
 - 断言用原生 `assert` 比较页面对象返回的纯值，或调用页面对象的 `expect_xxx()` 断言方法；原始 Playwright API 禁止出现在用例。
-- **参数化用例**：能用同一套操作步骤、仅输入/预期值不同的场景写成 `@pytest.mark.parametrize` 形式，数据集放 `data/<功能名>.yaml` 经 `test_data` fixture 加载，不在用例内逐条复制重复方法；每个参数组合仍须携带用例 ID 与 `@allure.story`/`@allure.severity`。
+- **参数化用例（强化约定）**：当 testcase.md 场景标注 `[参数化]` 且含「数据矩阵」时，必须满足：**同步骤、仅输入/预期值不同的多组数据合并为一条用例**，用 `@pytest.mark.parametrize` 展开，绝不逐条复制重复方法。
+  - **数据源**：数据矩阵落盘为 `data/<module>.yaml`（与 `test_<功能>.py` 同名；顶层以场景名为 key 的 list of dict，每行含 `row_id` 及参数/预期字段），经根 `conftest.py` 的 `test_data` fixture 加载（如 `test_data["login_validation"]`）。
+  - **用例形态**：用 `pytest.mark.parametrize("row", [pytest.param(c, id=c["row_id"]) for c in test_data["<场景名>"]], ...)` 展开；每个参数组合携带 `row_id` 作为用例 ID，并用 `@allure.title("...{row[row_id]}...")` 让 Allure 每个组合独立呈现、可反向追溯到 testcase.md 的 `行ID`。
+  - **用例层零 Playwright API**：`row` 仅为纯数据，步骤与断言全部走页面对象通用方法（如 `fill_credentials(row["phone"], row["password"])` / `assert_validation(row["expected"])`），不得出现 locator / get_by_ / page.url / page.title。
+  - 单条参数化方法统一标注一次 `@allure.story`/`@allure.severity` 即可，每个组合经 `row_id` 自动区分。
+  - **预期结果可为多字段/多类型（通用，非仅登录）**：数据矩阵每行可同时携带多个预期字段（如 `expected_msg` / `expected_count` / `expected_url`），甚至用 `expected_type` 区分「成功跳转 / 错误提示 / 状态码」等不同结果性质。页面对象断言方法按行数据分支处理（如 `assert_result(row)` 内部依据 `row.get("expected_type")` 走不同断言路径），用例层仍只传 `row`、零 Playwright API。只要各数据行**步骤一致、仅数据与预期值不同**，无论功能域（搜索/筛选/表单/校验等）均可参数化，不局限于登录。
 - **跨页流程用例**：用例内按步骤顺序实例化所需页面对象，同一 `page` 实例贯穿流程，不重复造 browser。
 - **功能模块拆分依据（硬性约定）**：直接映射 **per-module `<模块>.testcase.md` 文件**——每一个 `<模块>.testcase.md` 对应一个 `test_<功能>.py` / `class Test<功能>`。文件命名 `<功能名>` 由 testcase.md 的「业务模块全名」派生为 snake_case（如 登录认证 → `test_login.py`）。`@allure.feature` 标注 **class 级且保留 testcase 的「业务模块全名」**（如 `@allure.feature("浏览发现")`）。模块内每个 `确定性 + READY` 场景 → 一个 `test_` 方法，**必须携带 testcase.md 的「`<模块名>-<实际业务名>`」用例 ID**（如 `@allure.testcase("登录认证-登入成功")` + `@pytest.mark.caseid(...)`，docstring 首行写明该用例 ID 与场景名）；用例 ID 一律沿用 testcase.md 原值，不得自行重编或省略。跨页面场景按 testcase.md 模块文件归属；testcase.md 未说明归属时退回修订，不自行判断。
-- class 内**不含 `__init__`**；共享 fixture 统一放 `e2e/testcases/conftest.py`（如 `header`/`home`/`common_layer`/`logged_in_page`/`_credentials`/`test_data` 等），各 `test_<功能>.py` 文件**不在文件内重复定义 fixture**。
+- class 内**不含 `__init__`**；共享 fixture 统一放 `e2e/testcases/conftest.py`（如 `header`/`home`/`common_layer`/`logged_in_page`/`_credentials` 等），`test_data` 由框架初始化生成的项目根 `conftest.py` 提供（按模块名自动加载 `data/<module>.yaml`）；各 `test_<功能>.py` 文件**不在文件内重复定义 fixture**。
 - 模块级常量若仅单功能使用可放该功能文件顶部；跨模块共享且非框架通用的**业务常量**统一放 `e2e/web/constants.py`，跨模块共享的**框架级共享常量**统一放 `config/config.yaml` 的 `web` 段；参数化数据集放 `data/`。
 
 **强制三步生成顺序（硬性规则，不得跳步）**：
