@@ -1,0 +1,52 @@
+# -*- coding: utf-8 -*-
+"""项目根 conftest：路径注入、命令行选项、Allure 会话生命周期。
+
+浏览器/页面/credentials 等 fixture 在 e2e/testcases/conftest.py 定义。
+
+⚠️ pytest 选项冲突规避（硬性）：
+- 本文件**只注册**本项目自有的 `--base_url` / `--user` / `--password`（`--pass` 别名）选项。
+- **严禁注册 `--browser` / `--headed` / `--headless`**：运行环境常已安装 pytest 浏览器插件
+  （如 `pytest-playwright` 等），它们已注册 `browser`/`headed`/`headless` 等选项；重复
+  `addoption` 会触发 `pytest: error: ... already added` / 「选项冲突」，导致 pytest 启动即失败。
+- 浏览器类型与无头模式**只由 `config.yaml` 的 `web.browser_type` / `web.headless` 驱动**：
+  要变更浏览器/无头，直接改配置（或配置 profile）。不注册 pytest 选项、也不依赖环境变量，
+  从根上规避与插件同名选项冲突。
+"""
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+# 将项目根加入 sys.path，保证 `e2e.*` 包导入可用
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from base_framework import finalize_report_session, reset_allure_dir, get_logger  # noqa: E402
+
+logger = get_logger("root_conftest")
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    # 仅注册项目自有选项；浏览器/无头模式走环境变量，绝不在此加 --browser/--headed
+    parser.addoption("--base_url", action="store", default=None, help="覆盖 web.base_url")
+    parser.addoption("--user", action="store", default=None, help="测试账号用户名（覆盖 WEB_USER）")
+    parser.addoption("--password", "--pass", action="store", dest="password", default=None,
+                     help="测试账号密码（覆盖 WEB_PASS，不落盘）")
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    reset_allure_dir("allure-results")
+    logger.info("session start: allure dir reset")
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    # env 必须为 dict（base_framework 会做 **(env or {}) 展开），不可传字符串
+    env = {"name": os.environ.get("TEST_ENV", "test")}
+    auto_open = os.environ.get("ALLURE_AUTO_OPEN", "false").lower() == "true"
+    email_enabled = os.environ.get("EMAIL_ENABLED", "false").lower() == "true"
+    finalize_report_session(session, env=env, auto_open=auto_open, email_enabled=email_enabled)
+    logger.info("session finish: exitstatus=%s", exitstatus)

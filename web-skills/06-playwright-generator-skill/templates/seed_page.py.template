@@ -1,0 +1,102 @@
+# -*- coding: utf-8 -*-
+"""__Feature__ 页面对象（POM）。
+
+由 playwright-generator-skill 产出。
+继承本 Skill 框架初始化模式提供的 BasePage，定位器语义化。
+定位与断言全部封装在本类内；测试用例不出现任何原始 Playwright API。
+
+【定位器纪律】本类内每个 locator 必须二选一：
+  (a) 经 Playwright MCP 在真实 DOM 实测命中，在 locator 上方注释 `# 实测命中：<说明>`；或
+  (b) 无法实测（无 BASE_URL / 未授权 / 需登录无凭据）时，写成 `self.loc("TODO_VERIFY:<元素用途，待 MCP 实测>")`。
+上游（testcase.md / business_flow.md）不提供任何定位线索，所有定位器均由本阶段在真实 DOM 实测获取；严禁凭常见命名猜测（如 #pages / 尾页 / #rankList / #bookDetail / 裸 table tr）。
+"""
+from playwright.sync_api import Page, expect
+
+from e2e.web.base_page import BasePage
+
+
+class __Feature__Page(BasePage):
+    """__Feature__ 业务页面对象。"""
+
+    # 结果容器：必须 MCP 实测命中后替换 TODO_VERIFY（注意区分 tbody 数据行与 thead 表头）
+    _rows = "TODO_VERIFY:结果数据行容器，待 MCP 实测（如 #bookList tr，表头在 thead 不计入）"
+
+    def open(self) -> None:
+        """打开 __feature__ 页面。"""
+        self.goto("/")
+
+    def wait_for_content(self, timeout: int = 10000) -> None:
+        """等待异步渲染内容就绪。
+
+        AJAX 表格/列表在 load 事件返回时往往尚未渲染数据，必须显式等待：
+        优先 networkidle，或等待目标容器元素出现。切勿在点击后直接 count()。
+        """
+        self.page.wait_for_load_state("networkidle")
+        self.wait_for(self.loc(self._rows).first, timeout=timeout)
+
+    def result_count(self) -> int:
+        """读取结果数据行数（返回纯值供用例 assert）。
+
+        仅统计数据行（剔除 thead 表头）；容器须经实测确认。
+        """
+        self.wait_for_content()
+        return self.count(self.loc(self._rows))
+
+    def key_text(self) -> str:
+        """读取关键文本（返回纯值供用例 assert）。"""
+        # 实测命中：真实标题节点（如 get_by_role("heading") 或具体选择器）
+        return self.get_text(self.loc("TODO_VERIFY:关键文本节点，待 MCP 实测"))
+
+    def is_active(self) -> bool:
+        """读取目标元素选中态（class 含 on 等，返回纯值供用例 assert）。"""
+        # 实测命中：真实选中态 class（站点可能用 on/active/current，需实测）
+        return "on" in (self.get_attribute(self.loc("TODO_VERIFY:目标元素，待实测"), "class") or "")
+
+    def expect_result_visible(self) -> None:
+        """断言封装方法：内部用 playwright expect（自带自动重试等待）。"""
+        expect(self.loc("TODO_VERIFY:结果区，待实测")).to_be_visible()
+
+    def submit(self, wait_for_navigation: bool = False) -> None:
+        """触发提交。
+
+        仅当 href 指向真实 URL / location.href / 表单 action / location.reload()
+        这类「真实导航」时传 wait_for_navigation=True。
+        href="javascript:;" 或 AJAX 提交属「原地刷新」，不要包 expect_navigation，
+        而应在点击后 wait_for_load_state("networkidle")。
+        """
+        if wait_for_navigation:
+            with self.page.expect_navigation():
+                self.click(self.loc("TODO_VERIFY:提交按钮，待实测"), name="提交按钮")
+        else:
+            self.click(self.loc("TODO_VERIFY:提交按钮，待实测"), name="提交按钮")
+            self.page.wait_for_load_state("networkidle")
+
+    def click_next_page(self) -> None:
+        """翻页（JS 原地更新，href="javascript:;" 或 laypage 组件）。
+
+        分页/筛选/搜索类点击属「原地 JS 刷新」，**不**包 expect_navigation，
+        否则会超时；点击后等列表重渲染（networkidle 或目标行等待）。
+        """
+        # 实测命中：真实下一页链接（如 a.layui-laypage-next）
+        self.click(self.loc("TODO_VERIFY:下一页链接，待 MCP 实测"), name="下一页")
+        self.page.wait_for_load_state("networkidle")
+
+    def open_help(self, new_tab: bool = False):
+        """target=_blank 链接：new_tab=True 时捕获新页并返回，供构造对应页面对象。"""
+        locator = self.loc("TODO_VERIFY:帮助链接，待实测")
+        if new_tab:
+            with self.page.context.expect_page() as popup_info:
+                self.click(locator, name="帮助链接")
+            new_page = popup_info.value
+            new_page.wait_for_load_state()
+            return new_page
+        self.click(locator, name="帮助链接")
+        return None
+
+    def current_url(self) -> str:
+        """当前 URL（封装，用例不直接访问 page.url）。"""
+        return self.page.url
+
+    def assert_url_contains(self, fragment: str) -> None:
+        """断言当前 URL 包含指定片段（封装）。"""
+        assert fragment in self.page.url, f"URL 应包含 {fragment}，实际：{self.page.url}"

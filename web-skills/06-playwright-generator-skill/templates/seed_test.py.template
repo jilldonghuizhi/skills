@@ -1,0 +1,30 @@
+# -*- coding: utf-8 -*-
+"""__Feature__ 测试用例。
+
+由 playwright-generator-skill 产出。
+消费本 Skill 框架初始化模式提供的 page fixture 与 base_framework 报告能力。
+凭据经 conftest 的 credentials fixture 注入（pytest 命令行 --user/--password 优先，其次环境变量），不硬编码真实账号。
+用例层零 Playwright API：定位与断言一律调用页面对象方法（状态读取方法返回纯值 + 原生 assert，
+或 expect_xxx() 断言封装）；本文件不出现 locator / get_by_ / page.url / page.title()。
+根据用户需求和审核通过的 spec/<模块>.testcase.md（确定性 + READY 场景）填写真实场景与断言。
+"""
+import allure
+import pytest
+
+from e2e.pages.__feature___page import __Feature__Page
+
+
+@allure.feature("__Feature__")
+class Test__Feature__:
+    """__Feature__ 功能测试。"""
+
+    @allure.story("正常流程")
+    @allure.severity(allure.severity_level.NORMAL)
+    @pytest.mark.ui
+    def test_s01_normal_flow(self, page) -> None:
+        """按需求和已验证探索事实实现正常流程断言。"""
+        page_object = __Feature__Page(page)
+        page_object.open()
+        page_object.wait_for_content()  # 异步内容先等待再断言
+        assert page_object.result_count() >= 1  # 状态读取方法 + 原生 assert
+        page_object.expect_result_visible()     # 或断言封装方法
