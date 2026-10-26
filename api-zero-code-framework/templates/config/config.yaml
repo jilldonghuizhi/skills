@@ -1,0 +1,23 @@
+# 统一配置（运行必需：base_url；其余可选）
+base_url: ""          # 被测服务地址（运行必需；留空则运行报错，不空跑）
+env: test             # 默认环境（dev/test/staging/prod），可用 --env / TEST_ENV 覆盖
+token: ""             # 全局 token（可选）；鉴权在 request_client 注入，已有 Authorization 不覆盖
+app: ""
+device: ""
+
+report:
+  allure_dir: allure-results
+  report_dir: reports/allure-report
+  json_path: reports/report.json
+
+# mail:                # 邮件通知（enable_email_report=true 时启用；smtp_password 用 MAIL_SMTP_PASSWORD 注入，勿明文）
+#   smtp_host: smtp.example.com
+#   smtp_port: 465
+#   smtp_user: user@example.com
+#   sender: user@example.com
+#   receivers:
+#     - qa@example.com
+#   use_ssl: true
+#   use_tls: false
+#   subject_prefix: "[API 自动化]"
+#   attach_report: true

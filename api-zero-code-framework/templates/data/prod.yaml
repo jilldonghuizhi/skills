@@ -1,0 +1,6 @@
+# 仅生产环境不同的常量；账号密码/token 等敏感值定义在具体环境文件，不在 share.yaml
+login:
+  valid:
+    username: prod_user
+    password: prod_pass
+# token 等如需覆盖也可放这里

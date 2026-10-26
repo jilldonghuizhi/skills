@@ -1,0 +1,12 @@
+# examples/your_api.yaml —— 单 API 参考模板（仅作写用例参考，不会被收集/运行）
+# 写真实用例时，把本文件复制到 testcases/apis/ 并替换 <...> 占位符
+name: <api_name>
+request:
+  method: <http_method>              # 引用 data/share.yaml 的方法常量（勿硬编码 post/get）
+  url: /<resource>/<action>                        # 相对路径；完整地址由 config.yaml 的 base_url 前缀拼接（ApiClient）
+  json: { <field>: <value> }                   # 服务端要 JSON 时用 json:；要表单用 form:
+extract_global:                     # 跨业务共享（下游步骤/业务用 ${<shared_var>} 取；跨 case 用 ${read_yaml(name)}）
+  <shared_var>: [json, $.data.<field>, <default>]
+validate:                           # 多类型软断言（失败汇总）
+  - equals:      { name: <断言说明>, actual: $.data.<field>, expected: <expected_value> }   # 注意 "${}" 在 flow 映射内必须加引号
+  - status_code: { name: <断言说明>, expected: 200 }

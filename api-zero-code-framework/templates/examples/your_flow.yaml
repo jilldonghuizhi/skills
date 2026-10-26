@@ -1,0 +1,11 @@
+# examples/your_flow.yaml —— 业务参考模板（仅作写用例参考，不会被收集/运行）
+# 写真实用例时，把本文件复制到 testcases/flows/ 并替换 <...> 占位符
+title: <flow_title>
+steps:                              # 业务 = 多个单 API / 子业务组合（顺序执行）
+  - include: apis/your_api.yaml
+  - include: apis/your_api.yaml
+    with:
+      json: { <field>: <value> }               # 覆盖请求体
+      validate:                     # 覆盖断言（正向/反向用例复用同一定义）
+        - not_equals: { name: <断言说明>, actual: $.data.<field>, expected: <expected_value> }
+  # - include: flows/your_sub_flow.yaml    # 嵌套业务，递归展开为 父业务::子业务::API

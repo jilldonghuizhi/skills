@@ -1,0 +1,22 @@
+stages:
+  - test
+
+api-tests:
+  stage: test
+  image: python:3.11
+  before_script:
+    - pip install -r requirements.txt
+    # allure-commandline 依赖 Java；CI 镜像可改用已含 allure 的镜像
+    - apt-get update && apt-get install -y default-jre || true
+    - npm install -g allure-commandline || true
+  script:
+    - python scripts/run_tests.py --env ${TEST_ENV:-test}
+  artifacts:
+    when: always
+    paths:
+      - allure-results/
+      - reports/
+    reports:
+      junit: reports/junit.xml
+  variables:
+    TEST_ENV: test
