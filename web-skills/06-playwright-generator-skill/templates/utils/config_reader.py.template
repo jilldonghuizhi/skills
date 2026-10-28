@@ -1,0 +1,91 @@
+# -*- coding: utf-8 -*-
+"""YAML 配置读取：支持环境变量覆盖（顶层键 + 节内子键）。"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any, Optional
+
+import yaml
+
+
+def _coerce(value: str) -> Any:
+    """把环境变量字符串解析为 bool/int/float/list/原始字符串。"""
+    low = value.strip().lower()
+    if low in ("true", "false"):
+        return low == "true"
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    if value.startswith("[") and value.endswith("]"):
+        inner = value[1:-1].strip()
+        return [v.strip() for v in inner.split(",") if v.strip()] if inner else []
+    return value
+
+
+class ConfigReader:
+    """加载 YAML 配置，提供 get / get_section / to_dict；环境变量优先覆盖。"""
+
+    def __init__(self, config_path: Optional[str] = None) -> None:
+        self._data: dict = {}
+        path = config_path or os.environ.get("WEB_FRAMEWORK_CONFIG")
+        if path and Path(path).exists():
+            self._data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+
+    # 环境变量覆盖：{节名}_{子键} 优先于 YAML（敏感项不落盘）
+    def _env_override(self, section: str, key: str) -> Any:
+        env_key = f"{section}_{key}".upper()
+        if env_key in os.environ:
+            return _coerce(os.environ[env_key])
+        # 顶层键的环境变量覆盖
+        top_key = key.upper()
+        if top_key in os.environ:
+            return _coerce(os.environ[top_key])
+        return None
+
+    def get(self, key: str, default: Any = None) -> Any:
+        # 支持 "section.key" 形式
+        if "." in key:
+            sec, sub = key.split(".", 1)
+            section = self._data.get(sec, {}) or {}
+            if not isinstance(section, dict):
+                return default
+            env = self._env_override(sec, sub)
+            if env is not None:
+                return env
+            return section.get(sub, default)
+        env = os.environ.get(key.upper())
+        if env is not None:
+            return _coerce(env)
+        return self._data.get(key, default)
+
+    def get_section(self, sec: str) -> dict:
+        section = self._data.get(sec, {}) or {}
+        if not isinstance(section, dict):
+            return {}
+        # 合并节内子键的环境变量覆盖
+        merged = dict(section)
+        prefix = f"{sec}_".upper()
+        for k, v in list(os.environ.items()):
+            if k.startswith(prefix):
+                merged[k[len(prefix):].lower()] = _coerce(v)
+        return merged
+
+    def to_dict(self) -> dict:
+        return self._data
+
+
+_config: Optional[ConfigReader] = None
+
+
+def get_config(config_path: Optional[str] = None) -> ConfigReader:
+    """便利函数：缺省取 WEB_FRAMEWORK_CONFIG 或 config/config.yaml。"""
+    global _config
+    if _config is None or config_path:
+        _config = ConfigReader(config_path or "config/config.yaml")
+    return _config

@@ -1,0 +1,48 @@
+# Playwright Web 自动化框架
+
+零代码改造后的产出结构：框架骨架由 `scripts/run_generator.py --init` 复制生成，POM 用例由 LLM 按 `spec/<模块>.testcase.md` 生成。
+
+## 目录结构
+
+```
+config/config.yaml      # web / report / email / auth 配置（base_url、浏览器、无头、超时、重试等）
+base/                   # 基类：BasePage（导航/点击/输入/读取/断言/截图封装 + allure.step）
+common/                 # 浏览器生命周期（browser_manager）、业务常量（constants）
+utils/                 # 日志 / 配置读取 / 报告 / 邮件（与业务无关）
+tests/                  # 测试用例（一功能一类一文件）+ tests/conftest.py（page / credentials / test_data）
+conftest.py             # 根 conftest：session 生命周期 + 路径注入 + pytest_addoption
+pages/                  # 业务页面对象（继承 BasePage，由 POM 阶段生成）
+components/             # 跨页公共组件（由 POM 阶段生成）
+data/                   # 参数化用例数据源（YAML，与 test_<功能>.py 同名）
+spec/                   # <模块>.testcase.md（generator 唯一业务输入）
+pytest.ini / requirements.txt / .github/workflows/ci.yml
+```
+
+## 初始化框架
+
+```bash
+pip install -r requirements.txt
+python -m playwright install chromium
+python scripts/run_generator.py --init --base-url <真实前台地址> --test-user <测试账号用户名>
+```
+
+`--init` 从 `templates/` 复制全部框架骨架到项目根，渲染 `config.yaml` 的占位符（`__BASE_URL__`/`__TEST_USER__`/`__BROWSER_TYPE__`/`__HEADLESS__`），并创建空目录 `pages/`、`components/`、`data/`、`spec/`。已存在的文件保留（幂等）。
+
+## 生成 POM 用例
+
+1. 准备 `spec/<模块>.testcase.md`（符合 testcase.md 格式，标注「确定性 + READY」场景）。
+2. 运行 `python scripts/run_generator.py spec/<模块>.testcase.md` 校验输入并列出待生成功能。
+3. 按三步顺序生成：① 落页面类骨架（方法签名为 `NotImplementedError`/`pass`）→ ② 回填方法体（locator 由真实页面 accessibility 快照实测，注释 `# 实测命中`）→ ③ 写测试用例。
+4. 校验：每步 `py_compile`；第 2 步 `run_generator.py --check-locators` 零疑似；第 3 步 `pytest --collect-only -q` 成功且用例文件零原始 Playwright API。
+
+## 运行
+
+```bash
+python -m pytest --alluredir=allure-results -n auto --reruns 2
+```
+
+- 凭据：命令行 `--user/--password`（或环境变量 `WEB_USER`/`WEB_PASS`）经 `credentials` fixture 注入，不落盘。
+- 多环境：浏览器类型/无头只由 `config.yaml` 的 `web.browser_types` / `web.headless` 驱动。
+- 失败重试由 `pytest-rerunfailures` 负责（`pytest.ini` 的 `--reruns 2`），并行由 `-n auto` 负责。
+- Allure 报告：`pytest.ini` 的 `--alluredir=allure-results`；生成 HTML 需额外安装 `allure-commandline` 与 Java。
+- `.gitignore` 排除 `allure-results/`、`report.json`、`screenshots/`、`traces/` 等运行产物，仅源码与 `spec/` 受版本管理。

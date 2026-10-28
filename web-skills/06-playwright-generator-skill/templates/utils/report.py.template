@@ -1,0 +1,259 @@
+# -*- coding: utf-8 -*-
+"""Allure 报告工具（与具体驱动无关）：汇总 / 清理 / 收尾 / 失败工件挂载 / 报告生成。
+
+并行安全：finalize_report_session / reset_allure_dir 内部按 xdist workerinput 判空，
+仅控制进程执行一次；并做 --collect-only 守卫。只统计 *-result.json，避免污染 total。
+"""
+from __future__ import annotations
+
+import glob
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any, Optional
+
+import allure
+
+from utils.config_reader import ConfigReader, get_config
+from utils.email_sender import EmailSender
+from utils.logger import get_logger
+
+logger = get_logger("report")
+
+
+# ---------------------------------------------------------------------------
+# 运行前清理（避免跨运行 allure-results 污染统计）
+# ---------------------------------------------------------------------------
+def reset_allure_dir(session=None, allure_dir: str = "allure-results") -> None:
+    """pytest_sessionstart 专用：清空 allure 结果目录。
+
+    并行安全：传入 session 时，xdist worker 直接跳过；collect-only 守卫：跳过清理。
+    """
+    if session is not None:
+        if getattr(session.config, "workerinput", None) is not None:
+            return  # worker 不清理
+        if getattr(session.config.option, "collectonly", False):
+            return  # collect-only 不清理
+    d = Path(allure_dir)
+    if d.exists():
+        for p in d.iterdir():
+            try:
+                if p.is_file():
+                    p.unlink()
+                elif p.is_dir():
+                    shutil.rmtree(p)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("清理 %s 失败: %s", p, exc)
+
+
+# ---------------------------------------------------------------------------
+# 汇总
+# ---------------------------------------------------------------------------
+def build_summary(allure_dir: str = "allure-results") -> dict:
+    """解析 allure-results 下 *-result.json，聚合统计与故障/用例明细。"""
+    total = passed = failed = skipped = broken = 0
+    duration = 0.0
+    failures: list[dict] = []
+    cases: list[dict] = []
+
+    for path in glob.glob(os.path.join(allure_dir, "*-result.json")):
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        status = data.get("status", "unknown")
+        stage = data.get("stage", "")
+        d = float(data.get("stop", 0) or 0) - float(data.get("start", 0) or 0)
+        duration += max(d, 0.0)
+        if status == "passed":
+            passed += 1
+        elif status == "failed":
+            failed += 1
+        elif status == "skipped":
+            skipped += 1
+        elif status == "broken":
+            broken += 1
+        else:
+            continue
+        total += 1
+
+        name = data.get("name", path)
+        attachments = [
+            a.get("source", "") for a in data.get("attachments", []) if a.get("source")
+        ]
+        case = {
+            "name": name,
+            "status": status,
+            "duration": round(d, 3),
+            "error": data.get("statusMessage") if status in ("failed", "broken") else "",
+            "attachments": attachments,
+        }
+        cases.append(case)
+        if status in ("failed", "broken"):
+            failures.append({
+                "name": name,
+                "error": data.get("statusMessage", ""),
+                "stage": stage,
+                "attachments": attachments,
+            })
+
+    summary = {
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "skipped": skipped,
+        "broken": broken,
+        "duration": round(duration, 3),
+        "failures": failures,
+        "cases": cases,
+        "env": {},
+    }
+    return summary
+
+
+def write_json_report(summary: dict, out_path: str = "reports/report.json") -> None:
+    """写机器可读 report.json。"""
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(out_path).write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# 失败工件挂载（驱动器无关）
+# ---------------------------------------------------------------------------
+_EXT_MAP = {
+    ".png": allure.attachment_type.PNG,
+    ".jpg": allure.attachment_type.JPG,
+    ".jpeg": allure.attachment_type.JPG,
+    ".gif": allure.attachment_type.GIF,
+    ".webp": getattr(allure.attachment_type, "WEBP", allure.attachment_type.PNG),
+    ".zip": allure.attachment_type.ZIP,
+    ".txt": allure.attachment_type.TEXT,
+    ".html": allure.attachment_type.HTML,
+}
+
+
+def attach_failure_artifact(name: str, artifact_path: str, attach_type=None) -> bool:
+    """把失败工件（trace/video/截图）挂到 Allure；文件缺失返回 False 不阻断。"""
+    p = Path(artifact_path)
+    if not p.exists():
+        logger.debug("工件不存在，跳过挂载: %s", artifact_path)
+        return False
+    if attach_type is None:
+        attach_type = _EXT_MAP.get(p.suffix.lower(), allure.attachment_type.PNG)
+    try:
+        allure.attach.file(str(p), name=name, attachment_type=attach_type)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("挂载工件失败: %s -> %s", artifact_path, exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# 报告生成（allure CLI 四级回退）
+# ---------------------------------------------------------------------------
+def _locate_allure() -> Optional[str]:
+    candidate = shutil.which("allure")
+    if candidate:
+        return candidate
+    for env in ("ALLURE_BIN", "ALLURE_CMDLINE"):
+        v = os.environ.get(env)
+        if v and Path(v).exists():
+            return v
+    # npm 全局 allure-commandline（Windows 优先 .cmd）
+    try:
+        import subprocess as _sp
+        out = _sp.run(["npm", "root", "-g"], capture_output=True, text=True, timeout=10)
+        npm_root = out.stdout.strip()
+        for name in ("allure.cmd", "allure"):
+            p = Path(npm_root) / "allure-commandline" / "bin" / name
+            if p.exists():
+                return str(p)
+    except Exception:  # noqa: BLE001
+        pass
+    local = Path("./node_modules/allure-commandline/bin/allure")
+    if local.exists():
+        return str(local)
+    return None
+
+
+def generate_report(open_report: bool = False) -> int:
+    """生成 Allure HTML 到 reports/allure-report；返回 0 成功，非 0 失败。"""
+    allure_dir = "allure-results"
+    report_dir = "reports/allure-report"
+    # 保留 Trend：把历史复制进 allure-results/history
+    history_src = Path(report_dir) / "history"
+    if history_src.exists():
+        shutil.copytree(history_src, Path(allure_dir) / "history", dirs_exist_ok=True)
+    # 补齐 executor / categories
+    try:
+        (Path(allure_dir) / "categories.json").write_text(
+            json.dumps([{"name": "Failed", "matchedStatuses": ["failed", "broken"]}],
+                       ensure_ascii=False), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+    bin_path = _locate_allure()
+    if not bin_path:
+        logger.warning("未找到 allure CLI（需 JDK 8+）。安装：npm install -g allure-commandline，"
+                       "或官网下载 zip 解压后加入 PATH / 设 ALLURE_BIN 环境变量。")
+        return 1
+    cmd = [bin_path, "generate", allure_dir, "-o", report_dir, "--clean"]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:  # noqa: BLE001
+        logger.error("生成 Allure 报告失败: %s", exc.stderr)
+        return 1
+    logger.info("Allure 报告已生成: %s", report_dir)
+    if open_report:
+        # 禁止 file:// 直开（SPA 数据加载空白）；优先 allure open
+        try:
+            subprocess.run([bin_path, "open", report_dir], check=False)
+        except Exception:  # noqa: BLE001
+            logger.warning("无法以 allure open 打开报告；若用浏览器 file:// 打开，数据可能加载不出来。")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# 并行安全收尾（汇总 -> report.json -> Allure -> 邮件）
+# ---------------------------------------------------------------------------
+def finalize_report_session(
+    session,
+    allure_dir: str = "allure-results",
+    report_out: str = "reports/report.json",
+    auto_open: Optional[bool] = None,
+    email_enabled: Optional[bool] = None,
+    env: Optional[dict] = None,
+) -> Optional[dict]:
+    """pytest_sessionfinish 专用。并行安全：worker 直接跳过；collect-only 守卫。"""
+    if getattr(session.config, "workerinput", None) is not None:
+        return None
+    if getattr(session.config.option, "collectonly", False):
+        return None
+
+    config: ConfigReader = get_config()
+    if auto_open is None:
+        auto_open = os.environ.get("AUTO_OPEN_REPORT", "false").lower() == "true"
+    if email_enabled is None:
+        email_enabled = os.environ.get("SEND_REPORT_EMAIL", "false").lower() == "true"
+
+    summary = build_summary(allure_dir)
+    if env:
+        summary["env"].update(env)
+    summary["env"].setdefault("os", f"{os.uname().sysname if hasattr(os, 'uname') else os.name}")
+    write_json_report(summary, report_out)
+
+    rc = generate_report(open_report=auto_open)
+
+    if email_enabled:
+        try:
+            EmailSender().send_report(summary)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("发送邮件失败（不影响测试结果）: %s", exc)
+
+    logger.info("session finish: total=%s passed=%s failed=%s broken=%s duration=%ss",
+                summary["total"], summary["passed"], summary["failed"],
+                summary["broken"], summary["duration"])
+    return summary

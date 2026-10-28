@@ -1,0 +1,53 @@
+# -*- coding: utf-8 -*-
+"""tests 级 conftest：提供 page / credentials fixture。
+
+浏览器/context 生命周期由 common.browser_manager.BrowserManager 管理（session 级，
+按 config 的 web.browser_types 参数化逐引擎运行），每个用例新建独立 page（function 级）。
+凭据经环境变量 WEB_USER/WEB_PASS 或命令行 --user/--password 注入，不落盘。
+"""
+from __future__ import annotations
+
+import os
+
+import pytest
+from playwright.sync_api import Page
+
+from common.browser_manager import BrowserManager
+from utils.config_reader import get_config
+
+
+try:
+    _WEB = get_config().get_section("web") or {}
+    _BROWSER_TYPES = _WEB.get("browser_types") or _WEB.get("browser_type") or ["chromium"]
+    if isinstance(_BROWSER_TYPES, str):
+        _BROWSER_TYPES = [_BROWSER_TYPES]
+except Exception:  # noqa: BLE001
+    _BROWSER_TYPES = ["chromium"]
+
+
+@pytest.fixture(scope="session", params=_BROWSER_TYPES)
+def browser_manager(request) -> BrowserManager:
+    config = get_config()
+    bm = BrowserManager(config, browser_type=request.param)
+    bm.start()
+    yield bm
+    bm.close()
+
+
+@pytest.fixture(scope="session")
+def context(browser_manager):
+    return browser_manager.context
+
+
+@pytest.fixture
+def page(context) -> Page:
+    p = context.new_page()
+    yield p
+    p.close()
+
+
+@pytest.fixture
+def credentials(request: pytest.FixtureRequest) -> dict:
+    user = request.config.getoption("--user") or os.environ.get("WEB_USER", "")
+    password = request.config.getoption("--password") or os.environ.get("WEB_PASS", "")
+    return {"user": user, "password": password}

@@ -1,0 +1,76 @@
+# -*- coding: utf-8 -*-
+"""日志封装：控制台 + 文件（按天轮转、保留 30 天），Windows GBK 兜底。"""
+from __future__ import annotations
+
+import logging
+import sys
+from logging.handlers import TimedRotatingFileHandler
+from pathlib import Path
+
+_LOG_FMT = "%(asctime)s | %(levelname)s | %(filename)s:%(lineno)d | %(message)s"
+_DATE_FMT = "%Y-%m-%d %H:%M:%S"
+
+# 控制台按级别着色
+_LEVEL_COLOR = {
+    logging.DEBUG: "\033[36m",
+    logging.INFO: "\033[32m",
+    logging.WARNING: "\033[33m",
+    logging.ERROR: "\033[31m",
+    logging.CRITICAL: "\033[1;31m",
+}
+_RESET = "\033[0m"
+
+
+class _ColorFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        text = super().format(record)
+        color = _LEVEL_COLOR.get(record.levelno)
+        if color and sys.stdout.encoding and sys.stdout.encoding.lower().startswith("utf"):
+            return f"{color}{text}{_RESET}"
+        return text
+
+
+def _safe_reconfigure() -> None:
+    """对非 UTF-8 控制台做幂等 reconfigure(errors=replace)，避免中文日志 UnicodeEncodeError。"""
+    for stream in (sys.stdout, sys.stderr):
+        enc = getattr(stream, "encoding", None)
+        if enc and enc.lower() not in ("utf-8", "utf8") and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(errors="replace")
+            except Exception:  # noqa: BLE001
+                pass
+
+
+_LOGGERS: dict = {}
+
+
+def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
+    """返回按 name 缓存的 logger：控制台 + logs/ 按天轮转文件。"""
+    if name in _LOGGERS:
+        return _LOGGERS[name]
+
+    _safe_reconfigure()
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    logger.propagate = False
+    if logger.handlers:
+        return logger
+
+    console = logging.StreamHandler(sys.stdout)
+    console.setFormatter(_ColorFormatter(_LOG_FMT, _DATE_FMT))
+    logger.addHandler(console)
+
+    try:
+        log_dir = Path("logs")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        file_handler = TimedRotatingFileHandler(
+            log_dir / f"{name}.log", when="midnight", backupCount=30, encoding="utf-8"
+        )
+        file_handler.setFormatter(logging.Formatter(_LOG_FMT, _DATE_FMT))
+        logger.addHandler(file_handler)
+    except Exception:  # noqa: BLE001
+        # 日志目录不可写时不阻断测试
+        pass
+
+    _LOGGERS[name] = logger
+    return logger

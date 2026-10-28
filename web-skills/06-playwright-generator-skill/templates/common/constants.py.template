@@ -1,0 +1,11 @@
+# -*- coding: utf-8 -*-
+"""业务相关常量（与具体页面/功能语义强相关，非框架通用值）。
+
+框架级共享常量（超时、等待状态、重试、通用文案等）一律进 config/config.yaml 的 web 段，
+不在此硬编码；本文件只放真正跨模块共享的业务常量（状态码/业务文案/页面标识/阈值等）。
+"""
+from __future__ import annotations
+
+# 示例（按项目资料替换或删除）：
+# ORDER_STATUS_PAID: str = "paid"
+# DEFAULT_SEARCH_KEYWORD: str = "测试小说"

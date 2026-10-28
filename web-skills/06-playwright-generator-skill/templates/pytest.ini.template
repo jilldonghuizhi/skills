@@ -1,0 +1,7 @@
+[pytest]
+testpaths = tests
+addopts = --alluredir=allure-results -n auto --reruns 2
+markers =
+    ui: Web UI 用例
+    smoke: 冒烟用例
+disable_test_id_escaping_and_forfeit_all_rights_to_community_support = True

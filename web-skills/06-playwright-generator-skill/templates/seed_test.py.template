@@ -2,7 +2,7 @@
 """__Feature__ 测试用例。
 
 由 playwright-generator-skill 产出。
-消费本 Skill 框架初始化模式提供的 page fixture 与 base_framework 报告能力。
+消费本 Skill 框架初始化模式提供的 page fixture 与 utils 报告能力。
 凭据经 conftest 的 credentials fixture 注入（pytest 命令行 --user/--password 优先，其次环境变量），不硬编码真实账号。
 用例层零 Playwright API：定位与断言一律调用页面对象方法（状态读取方法返回纯值 + 原生 assert，
 或 expect_xxx() 断言封装）；本文件不出现 locator / get_by_ / page.url / page.title()。
@@ -11,7 +11,17 @@
 import allure
 import pytest
 
-from e2e.pages.__feature___page import __Feature__Page
+import pathlib
+import yaml
+
+from pages.__feature___page import __Feature__Page
+
+# 参数化数据矩阵：在测试模块级加载（parametrize 装饰器在收集期求值，不可引用 fixture 实例）
+_DATA = yaml.safe_load(
+    (pathlib.Path(__file__).resolve().parent.parent / "data" / f"{pathlib.Path(__file__).stem}.yaml")
+    .read_text(encoding="utf-8")
+) or {}
+_SEARCH = _DATA.get("search", [])
 
 
 @allure.feature("__Feature__")
@@ -22,7 +32,7 @@ class Test__Feature__:
     @allure.severity(allure.severity_level.NORMAL)
     @pytest.mark.ui
     def test_s01_normal_flow(self, page) -> None:
-        """按需求和已验证探索事实实现正常流程断言。"""
+        """按需求和已验证定位/步骤实现正常流程断言。"""
         page_object = __Feature__Page(page)
         page_object.goto()  # 导航到本页 URL_PATH（基类提供；禁止调用不存在的 open()）
         page_object.wait_for_content()  # 异步内容先等待再断言
@@ -34,14 +44,16 @@ class Test__Feature__:
     @pytest.mark.ui
     @pytest.mark.parametrize(
         "row",
-        [pytest.param(c, id=c["row_id"]) for c in []],  # 数据来自 test_data fixture + data/<module>.yaml
+        [pytest.param(c, id=c["row_id"]) for c in _SEARCH],  # 模块级加载 data/<module>.yaml
     )
-    def test_s02_param_demo(self, page, row, test_data) -> None:
+    def test_s02_param_demo(self, page, row) -> None:
         """参数化示例：同步骤多数据场景（来自 testcase.md `[参数化]` 场景）。
 
-        数据矩阵落盘 data/<module>.yaml，经根 conftest 的 test_data fixture 加载；
-        每行 row_id 作为用例 ID。用例层只传数据、调页面对象方法，零 Playwright API。
+        数据矩阵落盘 data/<module>.yaml，在**测试模块级**加载（parametrize 装饰器在收集期
+        求值、不可引用 fixture 实例）；每行 row_id 作为用例 ID。用例层只传数据、调页面对象
+        方法，零 Playwright API。
         """
+        allure.dynamic.title(f"参数化样本 {row['row_id']}")
         page_object = __Feature__Page(page)
         page_object.goto()
         page_object.apply_case(row)          # 按实际页面对象方法替换

@@ -8,11 +8,11 @@
 【定位器纪律】本类内每个 locator 必须二选一：
   (a) 经 Playwright MCP 在真实 DOM 实测命中，在 locator 上方注释 `# 实测命中：<说明>`；或
   (b) 无法实测（无 BASE_URL / 未授权 / 需登录无凭据）时，写成 `self.loc("TODO_VERIFY:<元素用途，待 MCP 实测>")`。
-上游（testcase.md / business_flow.md）不提供任何定位线索，所有定位器均由本阶段在真实 DOM 实测获取；严禁凭常见命名猜测（如 #pages / 尾页 / #rankList / #bookDetail / 裸 table tr）。
+前序（testcase.md / business_flow.md）不提供任何定位线索，所有定位器均由本阶段在真实 DOM 实测获取；严禁凭常见命名猜测（如 #pages / 尾页 / #rankList / #bookDetail / 裸 table tr）。
 """
 from playwright.sync_api import Page, expect
 
-from e2e.web.base_page import BasePage
+from base.base_page import BasePage
 
 
 class __Feature__Page(BasePage):
@@ -24,13 +24,15 @@ class __Feature__Page(BasePage):
     # 导航：复用基类 goto()（基于类级 URL_PATH），本类不另定义 open()。
 
     def wait_for_content(self, timeout: int = 10000) -> None:
-        """等待异步渲染内容就绪。
+        """等待异步渲染内容就绪（内容就绪锚点，非 networkidle）。
 
-        AJAX 表格/列表在 load 事件返回时往往尚未渲染数据，必须显式等待：
-        优先 networkidle，或等待目标容器元素出现。切勿在点击后直接 count()。
+        AJAX 表格/列表在 load 事件返回时往往尚未渲染数据，必须等结果锚点出现：
+        等待结果容器 _rows 可见；切勿在点击后直接 count()。超时可放宽，兼容空结果。
         """
-        self.page.wait_for_load_state("networkidle")
-        self.wait_for(self.loc(self._rows).first, timeout=timeout)
+        try:
+            self.wait_for(self.loc(self._rows).first, timeout=timeout)
+        except Exception:  # noqa: BLE001
+            self.logger.debug("内容锚点 %s 未出现（可能为空结果）", self._rows)
 
     def result_count(self) -> int:
         """读取结果数据行数（返回纯值供用例 assert）。
@@ -60,24 +62,24 @@ class __Feature__Page(BasePage):
         仅当 href 指向真实 URL / location.href / 表单 action / location.reload()
         这类「真实导航」时传 wait_for_navigation=True。
         href="javascript:;" 或 AJAX 提交属「原地刷新」，不要包 expect_navigation，
-        而应在点击后 wait_for_load_state("networkidle")。
+        而应在点击后等结果容器重渲染（内容就绪锚点）。
         """
         if wait_for_navigation:
             with self.page.expect_navigation():
                 self.click(self.loc("TODO_VERIFY:提交按钮，待实测"), name="提交按钮")
         else:
             self.click(self.loc("TODO_VERIFY:提交按钮，待实测"), name="提交按钮")
-            self.page.wait_for_load_state("networkidle")
+            self.wait_for_content()
 
     def click_next_page(self) -> None:
         """翻页（JS 原地更新，href="javascript:;" 或 laypage 组件）。
 
         分页/筛选/搜索类点击属「原地 JS 刷新」，**不**包 expect_navigation，
-        否则会超时；点击后等列表重渲染（networkidle 或目标行等待）。
+        否则会超时；点击后等列表重渲染（内容就绪锚点或目标行等待）。
         """
         # 实测命中：真实下一页链接（如 a.layui-laypage-next）
         self.click(self.loc("TODO_VERIFY:下一页链接，待 MCP 实测"), name="下一页")
-        self.page.wait_for_load_state("networkidle")
+        self.wait_for_content()
 
     def open_help(self, new_tab: bool = False):
         """target=_blank 链接：new_tab=True 时捕获新页并返回，供构造对应页面对象。"""

@@ -1,0 +1,158 @@
+# -*- coding: utf-8 -*-
+"""邮件发送：标准库 smtplib（无第三方依赖）+ 三段式 HTML 模板 + 内联失败截图。
+
+SMTP 主机/端口/账号/收件人取自 config.yaml 的 email 段；SMTP 授权码经环境变量
+EMAIL_AUTH_CODE 注入（不落盘）。发送失败吞异常、不阻断用例结果。
+"""
+from __future__ import annotations
+
+import os
+import smtplib
+import ssl
+from email.encoders import encode_base64
+from email.mime.base import MIMEBase
+from email.mime.image import MIMEImage
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from pathlib import Path
+from typing import Optional
+
+from utils.config_reader import ConfigReader, get_config
+from utils.logger import get_logger
+
+logger = get_logger("email")
+
+
+def _inline_images(summary: dict, allure_dir: str = "allure-results") -> dict:
+    """收集失败/用例里的图片附件，返回 {纯文件名: (路径, 扩展名)}（需拼接 allure_dir 前缀）。"""
+    images: dict = {}
+    for bucket in ("failures", "cases"):
+        for item in summary.get(bucket, []):
+            for src in item.get("attachments", []):
+                p = Path(allure_dir) / src
+                if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+                    images[Path(src).name] = (str(p), p.suffix.lower())
+    return images
+
+
+class EmailSender:
+    """SMTP 邮件发送（报告/失败通知）。"""
+
+    def send(
+        self,
+        subject: str,
+        html_body: str,
+        attachments: Optional[list] = None,
+        inline_images: Optional[dict] = None,
+    ) -> bool:
+        config: ConfigReader = get_config()
+        email_cfg = config.get_section("email") or {}
+        host = email_cfg.get("smtp_host", "")
+        port = int(email_cfg.get("smtp_port", 465))
+        sender = email_cfg.get("sender", "")
+        password = os.environ.get("EMAIL_AUTH_CODE", email_cfg.get("auth_code", ""))
+        receivers = email_cfg.get("receivers") or [sender]
+
+        if not (host and sender and password):
+            logger.warning("邮件配置不完整（host/sender/auth_code 缺失），跳过发送。")
+            return False
+        try:
+            msg = MIMEMultipart("related")
+            msg["Subject"] = subject
+            msg["From"] = sender
+            msg["To"] = ", ".join(receivers) if isinstance(receivers, list) else str(receivers)
+            msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+            # 内联图片：{(cid, (真实路径, 扩展名))}
+            inline = inline_images or {}
+            for cid, (img_path, ext) in inline.items():
+                with open(img_path, "rb") as f:
+                    img = MIMEImage(f.read(), _subtype=ext.lstrip(".") or "png")
+                img.add_header("Content-ID", f"<{cid}>")
+                img.add_header("Content-Disposition", "inline", filename=cid)
+                msg.attach(img)
+
+            # 附件（trace.zip 等）
+            for att in attachments or []:
+                p = Path(att)
+                if p.exists():
+                    part = MIMEBase("application", "octet-stream")
+                    part.set_payload(p.read_bytes())
+                    encode_base64(part)
+                    part.add_header("Content-Disposition", "attachment", filename=p.name)
+                    msg.attach(part)
+
+            ctx = ssl.create_default_context()
+            if port == 465:
+                with smtplib.SMTP_SSL(host, port, context=ctx, timeout=30) as server:
+                    server.login(sender, password)
+                    server.send_message(msg)
+            else:
+                with smtplib.SMTP(host, port, timeout=30) as server:
+                    server.starttls(context=ctx)
+                    server.login(sender, password)
+                    server.send_message(msg)
+            logger.info("邮件发送成功 -> %s", receivers)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.error("邮件发送失败（不影响测试结果）: %s", exc)
+            return False
+
+    def send_report(self, summary: dict, attachments: Optional[list] = None) -> bool:
+        total = summary.get("total", 0) or 0
+        passed = summary.get("passed", 0) or 0
+        failed = summary.get("failed", 0) or 0
+        broken = summary.get("broken", 0) or 0
+        rate = round(passed / total * 100, 1) if total else 0.0
+        subject = f"[自动化测试] 通过率{rate}% | {summary.get('env', {}).get('app', '')}"
+        html = _render_html(summary, total, passed, failed, broken, rate)
+        inline = _inline_images(summary)
+        return self.send(subject, html, attachments=attachments, inline_images=inline)
+
+
+def _render_html(summary: dict, total, passed, failed, broken, rate) -> str:
+    """三段式 HTML：环境信息 -> 统计条 -> 用例明细（内联截图、固定列宽、斑马纹）。"""
+    env = summary.get("env", {})
+    env_rows = "".join(
+        f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in env.items()
+    )
+    stats = (
+        f"<tr><td>总数 {total}</td><td>通过 {passed}</td><td>失败 {failed}</td>"
+        f"<td>异常 {broken}</td><td>通过率 {rate}%</td></tr>"
+        f"<tr><td colspan='5'>耗时 {summary.get('duration', 0)}s</td></tr>"
+    )
+    # 用例明细：仅渲染失败/异常，含内联 cid 截图
+    rows = []
+    for i, c in enumerate(summary.get("cases", [])):
+        if c["status"] not in ("failed", "broken"):
+            continue
+        color = "#d1242f" if c["status"] == "failed" else "#bf8700"
+        imgs = ""
+        for src in c.get("attachments", []):
+            cid = Path(src).name
+            imgs += f'<img src="cid:{cid}" width="120px">'
+        bg = "#ffffff" if i % 2 == 0 else "#f6f8fa"
+        rows.append(
+            f"<tr style='background:{bg}'>"
+            f"<td style='width:25%'>{c['name']}</td>"
+            f"<td style='width:6%;color:{color}'>{c['status']}</td>"
+            f"<td style='width:8%'>{c['duration']}s</td>"
+            f"<td style='width:40%;word-break:break-all;font-size:12px'>{c.get('error','')}</td>"
+            f"<td style='width:21%'>{imgs or '—'}</td></tr>"
+        )
+    detail = "".join(rows) or "<tr><td colspan='5'>无失败用例</td></tr>"
+    return f"""
+    <html><body>
+      <h2>测试报告</h2>
+      <h3>环境信息</h3>
+      <table border='1' cellspacing='0' cellpadding='2' style='border-collapse:collapse'>
+        {env_rows}</table>
+      <h3>统计</h3>
+      <table border='1' cellspacing='0' cellpadding='2' style='border-collapse:collapse'>
+        {stats}</table>
+      <h3>用例明细</h3>
+      <table border='1' cellspacing='0' cellpadding='2'
+             style='border-collapse:collapse;table-layout:fixed;width:100%'>
+        {detail}</table>
+    </body></html>
+    """

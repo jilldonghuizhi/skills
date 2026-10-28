@@ -1,0 +1,212 @@
+# -*- coding: utf-8 -*-
+"""BasePage：所有页面对象/组件的继承根。
+
+封装导航、点击、输入、读取、断言与截图等通用操作，统一日志与 allure.step；
+定位与断言下沉到此，用例层零原始 Playwright API。
+
+内置稳健基元（消除 SPA 常见 flaky，跨项目通用）：
+- goto()：基于内容就绪锚点（READY_LOCATOR）等待，且就绪等待非致命（兼容客户端守卫路由重定向）；
+- wait_for_ready() / wait_for_content()：异步内容就绪等待，超时仅告警不阻断（兼容空结果页）；
+- open_and_click()：动画容器（菜单/弹层）内"触发→等容器可见→短停顿→点选项→验证结果→重试"；
+- switch_locale()：通用区域/语言切换（动画安全 + 结果验证 + 重试，不绑定具体语种）；
+- is_disabled()：控件禁用态判断，自身无 disabled 时向上查祖先（通用启发式）。
+"""
+from __future__ import annotations
+
+from typing import Optional
+
+import allure
+from playwright.sync_api import Locator, Page, expect
+
+from utils.logger import get_logger
+
+
+class BasePage:
+    """页面/组件基类：提供通用原子操作与等待封装。"""
+
+    # 子类覆盖：基于该路径用 goto() 导航（无参走 URL_PATH，传 path 覆盖）
+    URL_PATH: str = ""
+
+    # 子类可声明导航后需等待就绪的关键定位器（异步内容加载完成标志）。
+    # SPA 的列表/详情等均由 XHR/AJAX 异步渲染，page.goto 的 load 事件不足以就绪。
+    # 必须是 XHR/AJAX 完成后才出现的元素，不得选"导航即存在"的外壳标签/常驻文案。
+    READY_LOCATOR: Optional[str] = None
+
+    def __init__(self, page: Page) -> None:
+        self.page = page
+        self.logger = get_logger(self.__class__.__name__)
+
+    # ---------- 导航 ----------
+    @allure.step("导航到页面")
+    def goto(self, path: Optional[str] = None) -> None:
+        """导航到 URL_PATH（或覆盖 path），并等待 READY_LOCATOR 就绪（异步内容）。"""
+        target = path if path is not None else self.URL_PATH
+        if not target:
+            self.logger.warning("URL_PATH 为空，未执行导航")
+            return
+        self.page.goto(target)
+        if self.READY_LOCATOR:
+            try:
+                self.page.wait_for_selector(self.READY_LOCATOR, timeout=20000)
+            except Exception:  # noqa: BLE001
+                self.logger.warning("READY_LOCATOR %s 未出现（可能重定向/守卫页）", self.READY_LOCATOR)
+
+    # ---------- 异步内容就绪 ----------
+    def wait_for_ready(self, timeout: int = 20000) -> None:
+        """等待 READY_LOCATOR 出现（异步内容加载完成）。超时仅告警不阻断。"""
+        if not self.READY_LOCATOR:
+            return
+        try:
+            self.page.wait_for_selector(self.READY_LOCATOR, timeout=timeout)
+        except Exception:  # noqa: BLE001
+            self.logger.warning("READY_LOCATOR %s 未出现", self.READY_LOCATOR)
+
+    def wait_for_content(self, anchor: Optional[str] = None, timeout: int = 15000) -> None:
+        """等待列表/结果内容渲染完成，在计数/读取前调用，避免 0 卡片/早返回竞态。
+
+        anchor 不传时用 READY_LOCATOR；用于 AJAX 表格/列表/分页等异步结果集。
+        超时仅告警（兼容无数据的空结果页），不抛异常阻断用例。
+        """
+        sel = anchor or self.READY_LOCATOR
+        if not sel:
+            return
+        try:
+            self.page.wait_for_selector(sel, timeout=timeout)
+        except Exception:  # noqa: BLE001
+            self.logger.debug("内容锚点 %s 未出现（可能为空结果）", sel)
+
+    # ---------- 动画容器交互（通用消除"动画吞点击"竞态） ----------
+    @allure.step("在容器中触发并点击: {option_name}")
+    def open_and_click(self, trigger: Locator, option: Locator, *,
+                       container: Optional[Locator] = None,
+                       option_name: str = "",
+                       outcome_text: Optional[str] = None,
+                       outcome_locator: Optional[Locator] = None,
+                       retries: int = 1) -> None:
+        """在会动画的菜单/弹层内完成"打开→点选项"，并验证可观测结果。
+
+        - trigger：打开容器的触发器（如语言切换按钮、下拉箭头）；
+        - option：容器内要点的目标项；
+        - container：容器本体（有动画时用于等待可见）；不传则等待 option 可见；
+        - outcome_text / outcome_locator：点击后界面应出现的可观测变化（验证操作生效）；
+          不传则跳过结果验证；
+        - retries：未达成结果时的重试次数（默认 1）。
+
+        机制：触发器点击后显式等待容器/选项可见并短停顿，规避 CSS 动画期间的点击被吞；
+        点击后按可观测结果判定，未达成则重试，从而消除下拉/弹层交互的偶发失效。
+        """
+        for _ in range(retries + 1):
+            trigger.click()
+            wait_target = container if container is not None else option
+            try:
+                wait_target.first.wait_for(state="visible", timeout=5000)
+            except Exception:  # noqa: BLE001
+                pass
+            self.page.wait_for_timeout(400)
+            option.click()
+            if outcome_text is None and outcome_locator is None:
+                return
+            if self._outcome_ok(outcome_text, outcome_locator):
+                return
+            self.page.wait_for_timeout(300)
+        self.logger.warning("open_and_click 未达成预期结果（outcome_text=%r）", outcome_text)
+
+    def _outcome_ok(self, outcome_text: Optional[str],
+                    outcome_locator: Optional[Locator]) -> bool:
+        """判定可观测结果是否已出现。"""
+        try:
+            if outcome_locator is not None:
+                if not outcome_locator.first.is_visible():
+                    return False
+                if outcome_text is not None:
+                    return outcome_locator.first.inner_text().strip() == outcome_text
+                return True
+            if outcome_text is not None:
+                return outcome_text in (self.page.locator("body").inner_text() or "")
+        except Exception:  # noqa: BLE001
+            return False
+        return False
+
+    # ---------- 区域/语言切换（通用基元，不绑定具体语种） ----------
+    @allure.step("切换区域/语言: {code}")
+    def switch_locale(self, code: str, *, toggle: Locator, option: Locator,
+                     expected_text: str, outcome_locator: Optional[Locator] = None) -> None:
+        """通用语言/区域切换：动画安全 + 结果验证 + 重试。
+
+        code 为语言/区域代码（仅作日志语义，不影响逻辑）；toggle 为打开语言菜单的
+        触发器，option 为目标语言项，expected_text 为切换后界面应出现的稳定文案
+        （用于验证切换真正生效）。outcome_locator 可指向该文案所在元素，精确比对。
+
+        断言本地化文本前应先强制已知基线：调用本方法将界面切到目标语言，消除默认
+        语言波动对断言的影响。具体 toggle/option/expected_text 由各页对象按真实
+        DOM 实测提供，本基元不写死任何语种或文案。
+        """
+        self.open_and_click(
+            trigger=toggle, option=option, option_name=f"语言 {code}",
+            outcome_text=expected_text, outcome_locator=outcome_locator, retries=1)
+
+    # ---------- 状态断言（disabled 祖先回退，通用启发式） ----------
+    def is_disabled(self, locator: Locator) -> bool:
+        """判断控件是否禁用（通用启发式）。
+
+        控件自身带原生 disabled 属性即禁用；否则向上查祖先是否带 disabled class
+        （部分 UI 把禁用态挂在包裹元素上，按钮/链接自身无 disabled 属性）。
+        """
+        el = locator.first
+        try:
+            if el.get_attribute("disabled") is not None:
+                return True
+            disabled_ancestor = el.locator(
+                "xpath=ancestor-or-self::*["
+                "contains(concat(' ', normalize-space(@class), ' '), ' disabled ')]")
+            return disabled_ancestor.count() > 0
+        except Exception:  # noqa: BLE001
+            return False
+
+    # ---------- 定位辅助 ----------
+    def loc(self, selector: str) -> Locator:
+        """统一 locator 入口（语义化优先；此处 selector 可为 CSS/语义混合）。"""
+        return self.page.locator(selector)
+
+    # ---------- 原子操作（均带日志 + allure.step） ----------
+    @allure.step("点击: {name}")
+    def click(self, locator: Locator, name: str = "") -> None:
+        locator.click()
+
+    @allure.step("输入: {name}")
+    def fill(self, locator: Locator, value: str, name: str = "") -> None:
+        locator.fill(value)
+
+    @allure.step("读取文本")
+    def get_text(self, locator: Locator) -> str:
+        return locator.inner_text()
+
+    @allure.step("读取属性: {attr}")
+    def get_attribute(self, locator: Locator, attr: str) -> Optional[str]:
+        return locator.get_attribute(attr)
+
+    @allure.step("等待元素可见")
+    def wait_for(self, locator: Locator, timeout: int = 10000) -> None:
+        locator.first.wait_for(state="visible", timeout=timeout)
+
+    def count(self, locator: Locator) -> int:
+        """返回匹配元素数量（纯值供断言）。"""
+        return locator.count()
+
+    @allure.step("截图")
+    def screenshot(self, path: str) -> Optional[str]:
+        """截图到指定路径，失败返回 None 不阻断。"""
+        try:
+            self.page.screenshot(path=path, full_page=False)
+            return path
+        except Exception as exc:  # noqa: BLE001
+            self.logger.debug("截图失败: %s", exc)
+            return None
+
+    # ---------- 断言封装（用例直接调用） ----------
+    def expect_visible(self, locator: Locator) -> None:
+        """断言元素可见（内部用 playwright expect 自带重试等待）。"""
+        expect(locator).to_be_visible()
+
+    def expect_text(self, locator: Locator, text: str) -> None:
+        expect(locator).to_contain_text(text)

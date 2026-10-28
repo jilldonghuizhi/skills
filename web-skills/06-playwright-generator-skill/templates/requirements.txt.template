@@ -1,0 +1,7 @@
+pytest>=7.0
+pytest-xdist>=2.5
+allure-pytest>=2.12
+PyYAML>=5.4
+python-dotenv>=0.21
+playwright>=1.40
+pytest-rerunfailures>=11.0

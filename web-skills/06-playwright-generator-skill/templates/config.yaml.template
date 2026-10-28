@@ -1,16 +1,16 @@
 # Web 自动化框架配置（由 playwright-generator-skill 框架初始化模式渲染）
 # —— 本模板为通用占位符，不写死任何项目的真实地址或账号 ——
 # 仅在「生成具体项目代码」这一步，从项目资料（按项目根目录的 project_template.md 编写）读取真实值替换以下占位符：
-#   __BASE_URL__      真实 Web 前台地址（如 http://novel.hctestedu.com/）
-#   __TEST_USER__     真实测试账号用户名（如 16600037896）
-#   __BROWSER_TYPE__  chromium / firefox / webkit
-#   __HEADLESS__      true / false
-# 密码（__TEST_PASS__）不写入本文件：运行期经 conftest 的 credentials fixture
-#   （命令行 --password 或项目约定的环境变量，如 WEB_PASS）注入，详见 e2e/testcases/conftest.py。
+#   __BASE_URL__      真实 Web 前台地址（如 http://novel.hctestedu.com/），生成时直接写入，不留占位符
+#   __TEST_USER__     真实测试账号用户名（如 16600037896），生成时直接写入，不留占位符
+#   __BROWSER_TYPE__  chromium / firefox / webkit；可扩展为多种，如 ['chromium','firefox']
+#   __HEADLESS__      true / false（默认 true）
+# 密码不写入本文件：运行期经 conftest 的 credentials fixture
+#   （命令行 --password 优先，其次环境变量 WEB_PASS 注入），详见 tests/conftest.py。
 
 web:
   base_url: "__BASE_URL__"
-  browser_type: "__BROWSER_TYPE__"
+  browser_types: ["__BROWSER_TYPE__"]
   headless: __HEADLESS__
   viewport:
     width: 1280
